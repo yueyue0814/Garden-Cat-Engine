@@ -606,8 +606,9 @@ def _get_next_letter(state):
 
 
 def _build_letter_messages(state, letter):
+    cat_name = get_current_cat_name(state)
     return [
-        "✉️ 收到猫咪的一封信！",
+        f"✉️ 收到{cat_name}的一封信！",
         f"《{letter['title']}》",
         letter["text"],
         f"当前已收集 {len(state['letters_received'])}/{len(CAT_LETTERS)}",
@@ -648,7 +649,8 @@ def _resolve_letter_progress(state, now=None, letter_context=None):
             state["letters_received"].append(next_idx)
             state["letter_affection_progress"] = progress
             delivered_messages = _build_letter_messages(state, next_letter)
-            add_event(state, f"✉️ 收到猫咪第{next_idx + 1}封信")
+            cat_name = get_current_cat_name(state)
+            add_event(state, f"✉️ 收到{cat_name}第{next_idx + 1}封信")
             if letter_context is not None:
                 letter_context.setdefault("messages", []).extend(delivered_messages)
                 letter_context["remaining_deliveries"] = max(
@@ -1247,6 +1249,12 @@ def settle_cat_lifecycle(state, target_time, letter_context=None):
                 cat_state["current_visit_started_at"] = next_transition_at
                 cat_state["current_visit_leave_at"] = next_transition_at + _roll_cat_visit_duration_seconds()
                 cat_state["next_visit_at"] = 0
+                _trigger_cat_bowls_for_auto_node(
+                    state,
+                    now=next_transition_at,
+                    source="visit_arrival",
+                    letter_context=letter_context,
+                )
                 cat_name = get_current_cat_name(state)
                 add_event(state, f"{cat_name}来了，正在花园里停留。")
                 events.append(f"{cat_name}来了，正在花园里停留。")
@@ -1301,6 +1309,12 @@ def settle_cat_lifecycle(state, target_time, letter_context=None):
             _ensure_cat_stats_for_lifecycle(state)
             if location == CAT_LOCATION_AWAY:
                 _set_cat_location(state, CAT_LOCATION_GARDEN, settled_at)
+                _trigger_cat_bowls_for_auto_node(
+                    state,
+                    now=settled_at,
+                    source="waiting_name_arrival",
+                    letter_context=letter_context,
+                )
             cat_state["next_visit_at"] = 0
             cat_state["current_visit_leave_at"] = 0
             cat_state["next_outing_at"] = 0
@@ -1332,6 +1346,12 @@ def settle_cat_lifecycle(state, target_time, letter_context=None):
                 _set_cat_location(state, CAT_LOCATION_HOME, outing_return_at)
                 cat_state["outing_return_at"] = 0
                 _schedule_next_adopted_outing(cat_state, outing_return_at)
+                _trigger_cat_bowls_for_auto_node(
+                    state,
+                    now=outing_return_at,
+                    source="outing_return",
+                    letter_context=letter_context,
+                )
                 cat_name = get_current_cat_name(state)
                 add_event(state, f"{cat_name}回家了。")
                 events.append(f"{cat_name}回家了。")
@@ -1820,7 +1840,7 @@ def _normalize_v5_cat_foundation(data, now, had_cat_state=False):
         location = location_default
     if phase == CAT_PHASE_ADOPTED and location == CAT_LOCATION_GARDEN:
         location = CAT_LOCATION_HOME
-    elif phase == CAT_PHASE_ADOPTED and has_legacy_cat and location == CAT_LOCATION_AWAY:
+    elif phase == CAT_PHASE_ADOPTED and has_legacy_cat and not had_cat_state and location == CAT_LOCATION_AWAY:
         location = CAT_LOCATION_HOME
     elif phase == CAT_PHASE_WAITING_NAME and location == CAT_LOCATION_AWAY:
         location = CAT_LOCATION_GARDEN
@@ -2170,7 +2190,7 @@ def _trigger_food_bowl_roll(state, now=None, source=None, letter_context=None):
         food_type = str(food_bowl.get("food_type", DEFAULT_CAT_FOOD_TYPE))
         food_name = ITEMS.get(food_type, ITEMS[DEFAULT_CAT_FOOD_TYPE]).get("name", ITEMS[DEFAULT_CAT_FOOD_TYPE]["name"])
         cat_name = get_current_cat_name(state)
-        _record_cat_care_event(state, f"{cat_name}吃了一份{food_name}。", source=source)
+        _record_cat_care_event(state, f"{cat_name}吃了{servings_eaten}份{food_name}。", source=source)
     return servings_eaten, letter_messages
 
 
@@ -2199,8 +2219,88 @@ def _trigger_water_bowl_roll(state, now=None, source=None, letter_context=None):
         )
     if servings_drank > 0:
         cat_name = get_current_cat_name(state)
-        _record_cat_care_event(state, f"{cat_name}喝了一份水。", source=source)
+        _record_cat_care_event(state, f"{cat_name}喝了{servings_drank}份水。", source=source)
     return servings_drank, letter_messages
+
+
+CAT_AUTO_FOOD_THRESHOLDS = (85.0, 70.0, 50.0, 30.0)
+CAT_AUTO_WATER_THRESHOLDS = (85.0, 70.0, 50.0, 25.0)
+
+
+def _crossed_lower_stat_band(start_value, end_value, thresholds):
+    try:
+        start_value = float(start_value)
+        end_value = float(end_value)
+    except (TypeError, ValueError):
+        return False
+    if end_value >= start_value:
+        return False
+    return any(start_value > threshold >= end_value for threshold in thresholds)
+
+
+def _should_auto_food_roll(start_hunger, end_hunger):
+    if _crossed_lower_stat_band(start_hunger, end_hunger, CAT_AUTO_FOOD_THRESHOLDS):
+        return True
+    try:
+        return float(start_hunger) <= CAT_PASSIVE_STAT_FLOOR and float(end_hunger) <= CAT_PASSIVE_STAT_FLOOR
+    except (TypeError, ValueError):
+        return False
+
+
+def _should_auto_water_roll(start_thirst, end_thirst):
+    if _crossed_lower_stat_band(start_thirst, end_thirst, CAT_AUTO_WATER_THRESHOLDS):
+        return True
+    try:
+        return float(start_thirst) <= CAT_PASSIVE_STAT_FLOOR and float(end_thirst) <= CAT_PASSIVE_STAT_FLOOR
+    except (TypeError, ValueError):
+        return False
+
+
+def _remember_auto_bowl_usage(state, food_used=0, water_used=0):
+    if food_used > 0:
+        state["_auto_food_servings_used"] = _safe_nonnegative_int(
+            state.get("_auto_food_servings_used", 0),
+            0,
+        ) + int(food_used)
+    if water_used > 0:
+        state["_auto_water_servings_used"] = _safe_nonnegative_int(
+            state.get("_auto_water_servings_used", 0),
+            0,
+        ) + int(water_used)
+
+
+def _trigger_cat_bowls_for_auto_node(
+    state,
+    *,
+    now=None,
+    source="auto_bowl",
+    letter_context=None,
+    food=True,
+    water=True,
+):
+    if not _is_cat_near_bowls(state):
+        return 0, 0, []
+    used_food = 0
+    used_water = 0
+    letter_messages = []
+    if food:
+        used_food, messages = _trigger_food_bowl_roll(
+            state,
+            now=now,
+            source=f"{source}:food",
+            letter_context=letter_context,
+        )
+        letter_messages.extend(messages)
+    if water:
+        used_water, messages = _trigger_water_bowl_roll(
+            state,
+            now=now,
+            source=f"{source}:water",
+            letter_context=letter_context,
+        )
+        letter_messages.extend(messages)
+    _remember_auto_bowl_usage(state, used_food, used_water)
+    return used_food, used_water, letter_messages
 
 
 def _get_interaction_acceptance_rate(state, interaction_id):
@@ -2704,6 +2804,8 @@ def save_game(state):
     now = int(time.time())
     state["last_update"] = now
     state.pop("_interaction_accepted", None)
+    state.pop("_auto_food_servings_used", None)
+    state.pop("_auto_water_servings_used", None)
     state["last_active_at"] = now
     if os.path.exists(SAVE_FILE):
         try:
@@ -3207,6 +3309,17 @@ def update_cat_stats(state, now, weather_data):
     stats["hunger"] = max(hunger_floor, start_hunger - hunger_decay * hours)
     stats["thirst"] = max(thirst_floor, start_thirst - thirst_decay * hours)
 
+    should_food_roll = _should_auto_food_roll(start_hunger, stats["hunger"])
+    should_water_roll = _should_auto_water_roll(start_thirst, stats["thirst"])
+    if should_food_roll or should_water_roll:
+        _trigger_cat_bowls_for_auto_node(
+            state,
+            now=now,
+            source="stat_drop",
+            food=should_food_roll,
+            water=should_water_roll,
+        )
+
     mood_decay = MOOD_BASE_DECAY
     if _is_premium_bed(state.get("cat_care", {}).get("bed")):
         mood_decay *= 0.6
@@ -3238,11 +3351,8 @@ def _advance_offline_weather(state, now):
 
 
 def _consume_offline_cat_portions(state):
-    if not _is_cat_near_bowls(state):
-        return 0, 0
-
-    used_food, _ = _trigger_food_bowl_roll(state, source="offline_food")
-    used_water, _ = _trigger_water_bowl_roll(state, source="offline_water")
+    used_food = _safe_nonnegative_int(state.pop("_auto_food_servings_used", 0), 0)
+    used_water = _safe_nonnegative_int(state.pop("_auto_water_servings_used", 0), 0)
     _sync_cat_stats_views(state)
     return used_food, used_water
 
@@ -3550,6 +3660,7 @@ def process_command(state, command):
     weather_data, weather_messages = get_weather_info(state, now)
     pest_messages = check_pests(state, now)
     lifecycle_messages = settle_cat_lifecycle(state, now, letter_context=letter_context)
+    _consume_offline_cat_portions(state)
 
     result = ""
     all_event_messages = weather_messages + pest_messages + lifecycle_messages
@@ -3940,10 +4051,18 @@ def process_command(state, command):
                 source=f"feed:{food_type}",
                 letter_context=letter_context,
             )
+            food_name = ITEMS[refill_result["refill_type"]]["name"]
+            cat_name = get_current_cat_name(state)
             if refill_result["space"] <= 0:
-                result = "❌ 没有这种猫粮"
+                result = "❌ 粮碗已经满了"
+            elif refill_result["added"] <= 0:
+                result = f"❌ 背包里的{food_name}不够"
+            elif refill_result["eaten"] > 0:
+                result = f"🍽️ 已给粮碗补充{food_name}，{cat_name}吃了{refill_result['eaten']}份。"
+            elif not _is_cat_near_bowls(state):
+                result = f"🍽️ 已给粮碗补充{refill_result['added']}份{food_name}。{cat_name}现在不在碗边。"
             else:
-                result = f"🍽️ 喂了{ITEMS[food_type]['name']}！"
+                result = f"🍽️ 已给粮碗补充{refill_result['added']}份{food_name}。"
 
     elif action == "give_water":
         if len(parts) != 1:
@@ -3951,13 +4070,21 @@ def process_command(state, command):
         elif state["cat"] is None:
             result = "❌ 还没有猫"
         else:
-            _refill_water_bowl(
+            refill_result = _refill_water_bowl(
                 state,
                 now=now,
                 source="give_water",
                 letter_context=letter_context,
             )
-            result = "💧 给猫喝了水！"
+            cat_name = get_current_cat_name(state)
+            if refill_result["space"] <= 0:
+                result = "❌ 水碗已经满了"
+            elif refill_result["drank"] > 0:
+                result = f"💧 已给水碗补满清水，{cat_name}喝了{refill_result['drank']}份。"
+            elif not _is_cat_near_bowls(state):
+                result = f"💧 已给水碗补满清水。{cat_name}现在不在碗边。"
+            else:
+                result = "💧 已给水碗补满清水。"
 
     elif action == "refill_food":
         if len(parts) not in (2, 3) or parts[1].lower() not in CAT_CARE_FOOD_TYPES:
@@ -3981,8 +4108,8 @@ def process_command(state, command):
             elif refill_result["eaten"] > 0:
                 cat_name = get_current_cat_name(state)
                 result = (
-                    f"✅ 已补满{ITEMS[food_type]['name']}，"
-                    f"{cat_name}马上吃掉了1份，当前剩余 {bowl['remaining_portions']}/{bowl['capacity']}"
+                    f"✅ 已补充{ITEMS[food_type]['name']}，"
+                    f"{cat_name}吃了{refill_result['eaten']}份，当前剩余 {bowl['remaining_portions']}/{bowl['capacity']}"
                 )
             else:
                 result = f"✅ 已向粮碗补充{refill_result['added']}份{ITEMS[food_type]['name']}"
@@ -4006,7 +4133,7 @@ def process_command(state, command):
                 cat_name = get_current_cat_name(state)
                 result = (
                     f"✅ 已补满清水，"
-                    f"{cat_name}马上喝掉了1份，当前剩余 {bowl['remaining_portions']}/{bowl['capacity']}"
+                    f"{cat_name}喝了{refill_result['drank']}份，当前剩余 {bowl['remaining_portions']}/{bowl['capacity']}"
                 )
             else:
                 result = f"✅ 已向水碗补充{refill_result['space']}份清水"
@@ -4039,7 +4166,9 @@ def process_command(state, command):
         elif state["inventory"]["items"].get(CAT_TREAT_ITEM_ID, 0) <= 0:
             result = "❌ 没有猫零食了"
         else:
-            state["_interaction_accepted"] = _is_cat_present_for_interaction(state) and _roll_interaction_acceptance(state, "give_treat")
+            cat_name = get_current_cat_name(state)
+            cat_present = _is_cat_present_for_interaction(state)
+            state["_interaction_accepted"] = cat_present and _roll_interaction_acceptance(state, "give_treat")
             _use_inventory_item(state, CAT_TREAT_ITEM_ID, 1)
             _apply_cat_effects(
                 state,
@@ -4055,7 +4184,12 @@ def process_command(state, command):
                 source="give_treat",
                 letter_context=letter_context,
             )
-            result = "🍬 给猫咪喂了零食，心情和亲密都上升了一点"
+            if state.get("_interaction_accepted") is not False:
+                result = f"🍬 给{cat_name}喂了零食，心情和亲密都上升了一点"
+            elif not cat_present:
+                result = f"🍬 {cat_name}现在不在这里，零食没有消耗"
+            else:
+                result = f"🍬 {cat_name}闻了闻零食，暂时没有吃，零食没有消耗"
 
     elif action == "pet":
         if len(parts) != 1:
@@ -4066,8 +4200,9 @@ def process_command(state, command):
             last_pet_time = state.get("cat_last_pet_real_time", 0)
             cooldown_seconds = PET_COOLDOWN_REAL_MINUTES * 60
             time_since_last_pet = now - last_pet_time
+            cat_name = get_current_cat_name(state)
             if time_since_last_pet < cooldown_seconds:
-                result = f"❌ 猫不想被摸，过{format_time(cooldown_seconds - time_since_last_pet)}再试"
+                result = f"❌ {cat_name}现在不想被摸，过{format_time(cooldown_seconds - time_since_last_pet)}再试"
             else:
                 state["cat_last_pet_real_time"] = now
                 _change_cat_stat(state, "mood", 3)
@@ -4078,7 +4213,7 @@ def process_command(state, command):
                     source="pet",
                     letter_context=letter_context,
                 )
-                result = "🤗 抚摸了小猫，它很开心！心情+10 亲密度+3"
+                result = f"🤗 抚摸了{cat_name}，它很开心！心情和亲密都上升了一点"
 
     elif action == "play":
         if state["cat"] is None:
@@ -4090,7 +4225,9 @@ def process_command(state, command):
             if state["inventory"]["items"].get(toy_id, 0) <= 0:
                 result = "❌ 没有这个玩具"
             else:
-                state["_interaction_accepted"] = _is_cat_present_for_interaction(state) and _roll_interaction_acceptance(state, toy_id)
+                cat_name = get_current_cat_name(state)
+                cat_present = _is_cat_present_for_interaction(state)
+                state["_interaction_accepted"] = cat_present and _roll_interaction_acceptance(state, toy_id)
                 _use_inventory_item(state, toy_id, 1)
                 _apply_cat_effects(
                     state,
@@ -4106,7 +4243,12 @@ def process_command(state, command):
                     source=f"play:{toy_id}",
                     letter_context=letter_context,
                 )
-                result = f"🎾 和猫玩了{ITEMS[toy_id]['name']}！（玩具已消耗）"
+                if state.get("_interaction_accepted") is not False:
+                    result = f"🎾 和{cat_name}玩了{ITEMS[toy_id]['name']}！（玩具已消耗）"
+                elif not cat_present:
+                    result = f"🎾 {cat_name}现在不在这里，玩具没有消耗"
+                else:
+                    result = f"🎾 {cat_name}看了看{ITEMS[toy_id]['name']}，暂时不想玩，玩具没有消耗"
 
     elif action == "buy_pot":
         if len(parts) != 1:
@@ -4222,8 +4364,8 @@ vase - 查看花瓶与鲜花枯萎度
 remove_vase <位置> - 移除花瓶中任意状态的花（不返还花朵或金币）
 adopt [名字] - 正式收养猫咪并可选取名
 rename_cat <名字> - 给已收养的猫咪改名
-feed <basic|premium> - 喂猫
-give_water - 给猫喝水
+feed <basic|premium> - 给粮碗补充猫粮
+give_water - 给水碗补水
 pet - 抚摸猫(冷却{PET_COOLDOWN_REAL_MINUTES}分钟)
 play <ball|feather> - 和猫玩（消耗玩具）
 encyclopedia - 查看图鉴
