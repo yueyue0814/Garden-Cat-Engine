@@ -2368,8 +2368,35 @@ function showKeyModal() {
   copy.className = "primary-btn";
   copy.textContent = "复制花园存档码";
   copy.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(keyText);
-    showToast("花园存档码已复制");
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(keyText);
+        copied = true;
+      }
+    } catch (_error) {
+      copied = false;
+    }
+
+    if (!copied) {
+      const textarea = document.createElement("textarea");
+      textarea.value = keyText;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.append(textarea);
+      try {
+        textarea.focus();
+        textarea.select();
+        copied = document.execCommand("copy");
+      } catch (_error) {
+        copied = false;
+      } finally {
+        textarea.remove();
+      }
+    }
+
+    showToast(copied ? "花园存档码已复制" : "自动复制失败，请手动复制上方存档码");
   });
   actions.append(copy);
   body.append(intro, box, actions);
