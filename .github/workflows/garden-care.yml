@@ -14,6 +14,7 @@ jobs:
         env:
           GARDEN_API_KEY: ${{ secrets.GARDEN_API_KEY }}
           GARDEN_SESSION_ID: ${{ secrets.GARDEN_SESSION_ID }}
+          GARDEN_TOKEN: ${{ secrets.GARDEN_TOKEN }}
 
         run: |
           python - <<'PY'
@@ -24,8 +25,25 @@ jobs:
 
           api_key = os.environ["GARDEN_API_KEY"].strip()
           session_id = os.environ["GARDEN_SESSION_ID"].strip()
+          garden_token = os.environ["GARDEN_TOKEN"].strip()
 
           base_url = "https://garden-cat-engine-dshd.onrender.com"
+
+          def get_status():
+              query = urllib.parse.urlencode({
+                  "session_id": session_id
+              })
+
+              request = urllib.request.Request(
+                  f"{base_url}/web/status?{query}",
+                  method="GET",
+                  headers={
+                      "X-Garden-Token": garden_token
+                  }
+              )
+
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  return json.load(response)
 
           def command(text):
               body = json.dumps({
@@ -46,47 +64,33 @@ jobs:
               with urllib.request.urlopen(request, timeout=120) as response:
                   return json.load(response)
 
-          def get_state():
-              query = urllib.parse.urlencode({
-                  "session_id": session_id
-              })
-
-              request = urllib.request.Request(
-                  f"{base_url}/api/state?{query}",
-                  method="GET",
-                  headers={
-                      "X-API-Key": api_key
-                  }
-              )
-
-              with urllib.request.urlopen(request, timeout=120) as response:
-                  return json.load(response)
-
-          # 先讓遊戲結算目前狀態
-          command("status")
-
-          result = get_state()
-          state = result.get("state", result)
+          result = get_status()
+          state = result.get("state", {})
           pots = state.get("pots", [])
 
           print("Found pots:", len(pots))
 
           watered = []
 
-          for slot, pot in enumerate(pots, start=1):
+          for pot in pots:
               if not isinstance(pot, dict):
                   continue
+
+              slot = pot.get("slot")
 
               print(
                   "Pot",
                   slot,
-                  "- flower:",
-                  pot.get("flower_id"),
+                  "- status:",
+                  pot.get("status"),
                   "- watered:",
                   pot.get("watered")
               )
 
-              if pot.get("watered") is False:
+              if (
+                  pot.get("status") == "growing"
+                  and pot.get("watered") is False
+              ):
                   response = command(f"water {slot}")
                   print(f"Water {slot}:", response.get("message", ""))
                   watered.append(slot)
