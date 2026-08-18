@@ -21,8 +21,8 @@ jobs:
           import os
           import urllib.request
 
-          api_key = os.environ["GARDEN_API_KEY"]
-          session_id = os.environ["GARDEN_SESSION_ID"]
+          api_key = os.environ["GARDEN_API_KEY"].strip()
+          session_id = os.environ["GARDEN_SESSION_ID"].strip()
           url = "https://garden-cat-engine-dshd.onrender.com/api/cmd"
 
           def command(text):
