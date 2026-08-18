@@ -64,6 +64,12 @@ jobs:
 
           result = get_status()
 
+          print("Top-level keys:", list(result.keys()))
+
+          for key in ("state", "summary", "data"):
+              if isinstance(result.get(key), dict):
+                  print(f"{key} keys:", list(result[key].keys()))
+
           state = result.get("state", result)
           pots = state.get("pots", [])
 
