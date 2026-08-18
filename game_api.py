@@ -1038,10 +1038,22 @@ def require_api_key(func):
     @wraps(func)
     def decorated(*args, **kwargs):
         # 本地未设置密钥时允许调试；正式部署请务必设置 GARDEN_API_KEY。
-        if API_KEY and request.headers.get("X-API-Key", "") != API_KEY:
-            return jsonify(
-                {"ok": False, "message": "❌ 无效的 API Key，请在请求头加上 X-API-Key"}
-            ), 401
+        if API_KEY:
+            x_api_key = request.headers.get("X-API-Key", "")
+            auth_header = request.headers.get("Authorization", "")
+
+            bearer_key = ""
+            if auth_header.lower().startswith("bearer "):
+                bearer_key = auth_header[7:].strip()
+
+            if x_api_key != API_KEY and bearer_key != API_KEY:
+                return jsonify(
+                    {
+                        "ok": False,
+                        "message": "❌ 无效的 API Key，请使用 X-API-Key 或 Authorization: Bearer"
+                    }
+                ), 401
+
         return func(*args, **kwargs)
 
     return decorated
