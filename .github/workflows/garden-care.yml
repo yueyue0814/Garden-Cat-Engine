@@ -1,0 +1,66 @@
+name: Garden Care
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+jobs:
+  care:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check and water garden
+        env:
+          GARDEN_API_KEY: ${{ secrets.GARDEN_API_KEY }}
+          GARDEN_SESSION_ID: ${{ secrets.GARDEN_SESSION_ID }}
+
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          api_key = os.environ["GARDEN_API_KEY"]
+          session_id = os.environ["GARDEN_SESSION_ID"]
+          url = "https://garden-cat-engine-dshd.onrender.com/api/cmd"
+
+          def command(text):
+              body = json.dumps({
+                  "session_id": session_id,
+                  "command": text
+              }).encode("utf-8")
+
+              request = urllib.request.Request(
+                  url,
+                  data=body,
+                  method="POST",
+                  headers={
+                      "X-API-Key": api_key,
+                      "Content-Type": "application/json"
+                  }
+              )
+
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+
+          result = command("status")
+          state = result.get("state", {})
+          pots = state.get("pots", [])
+
+          watered = []
+
+          for pot in pots:
+              if (
+                  pot.get("status") == "growing"
+                  and pot.get("watered") is False
+              ):
+                  slot = pot.get("slot")
+                  command(f"water {slot}")
+                  watered.append(slot)
+
+          if watered:
+              print("Watered pots:", watered)
+          else:
+              print("Everything is already watered.")
+          PY
