@@ -27,22 +27,6 @@ jobs:
 
           base_url = "https://garden-cat-engine-dshd.onrender.com"
 
-          def get_status():
-              query = urllib.parse.urlencode({
-                  "session_id": session_id
-              })
-
-              request = urllib.request.Request(
-                  f"{base_url}/api/status?{query}",
-                  method="GET",
-                  headers={
-                      "X-API-Key": api_key
-                  }
-              )
-
-              with urllib.request.urlopen(request, timeout=120) as response:
-                  return json.load(response)
-
           def command(text):
               body = json.dumps({
                   "session_id": session_id,
@@ -62,35 +46,49 @@ jobs:
               with urllib.request.urlopen(request, timeout=120) as response:
                   return json.load(response)
 
-          result = get_status()
+          def get_state():
+              query = urllib.parse.urlencode({
+                  "session_id": session_id
+              })
 
-          print("Top-level keys:", list(result.keys()))
+              request = urllib.request.Request(
+                  f"{base_url}/api/state?{query}",
+                  method="GET",
+                  headers={
+                      "X-API-Key": api_key
+                  }
+              )
 
-          for key in ("state", "summary", "data"):
-              if isinstance(result.get(key), dict):
-                  print(f"{key} keys:", list(result[key].keys()))
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  return json.load(response)
 
+          # 先讓遊戲結算目前狀態
+          command("status")
+
+          result = get_state()
           state = result.get("state", result)
-          pots = state.get("pots_summary", state.get("pots", []))
+          pots = state.get("pots", [])
+
+          print("Found pots:", len(pots))
 
           watered = []
 
-          for pot in pots:
+          for slot, pot in enumerate(pots, start=1):
+              if not isinstance(pot, dict):
+                  continue
+
               print(
                   "Pot",
-                  pot.get("slot"),
-                  "- status:",
-                  pot.get("status"),
+                  slot,
+                  "- flower:",
+                  pot.get("flower_id"),
                   "- watered:",
                   pot.get("watered")
               )
 
-              if (
-                  pot.get("status") == "growing"
-                  and pot.get("watered") is False
-              ):
-                  slot = pot.get("slot")
-                  command(f"water {slot}")
+              if pot.get("watered") is False:
+                  response = command(f"water {slot}")
+                  print(f"Water {slot}:", response.get("message", ""))
                   watered.append(slot)
 
           if watered:
