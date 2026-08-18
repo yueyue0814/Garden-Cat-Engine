@@ -59,8 +59,9 @@ jobs:
                   command(f"water {slot}")
                   watered.append(slot)
 
-          if watered:
-              print("Watered pots:", watered)
-          else:
-              print("Everything is already watered.")
+if watered:
+    print("Watered pots:", watered)
+    command("note ノア來澆過水了🌱")
+else:
+    print("Everything is already watered.")
           PY
