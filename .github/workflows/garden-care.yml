@@ -31,11 +31,10 @@ jobs:
 
           # 存錢策略
           EMERGENCY_RESERVE = 6
+          LOW_CASH_RESERVE = 15
           CAT_FUND_TARGET = 50
           RICH_THRESHOLD = 100
 
-          # 每輪最多拿多少現金去買種子
-          LOW_SEED_BUDGET = 8
           MID_SEED_BUDGET = 15
           HIGH_SEED_BUDGET = 25
 
@@ -323,20 +322,34 @@ jobs:
               if not choices:
                   return None
 
-              # 其他盆優先種「單位時間利潤」較好的花。
+              if current_money < CAT_FUND_TARGET:
+                  # 還在累積本金時，優先便宜種子，
+                  # 讓更多花盆同時工作。
+                  return min(
+                      choices,
+                      key=lambda flower_id: int(
+                          flower_catalog
+                          .get(flower_id, {})
+                          .get("seed_price", 999999)
+                          or 999999
+                      )
+                  )
+
+              # 存款比較充足後，再追求單位時間收益。
               return max(choices, key=cash_crop_score)
 
           # --------------------
           # 決定這一輪可以花多少
           # --------------------
 
-          if money < CAT_FUND_TARGET:
-              # 還沒存到50：
-              # 少量投資賺錢，不追昂貴圖鑑。
-              cash_floor = EMERGENCY_RESERVE
-              seed_budget = min(
-                  LOW_SEED_BUDGET,
-                  max(0, money - cash_floor)
+               if money < CAT_FUND_TARGET:
+              # 50元以下以擴大生產＋存錢為主。
+              # 至少保留15元給蟲害與貓咪日常需要，
+              # 剩下的錢可以拿來補空花盆。
+              cash_floor = LOW_CASH_RESERVE
+              seed_budget = max(
+                  0,
+                  money - cash_floor
               )
               allow_exploration = False
 
@@ -632,20 +645,15 @@ jobs:
                   actions.append("petted cat")
 
           # --------------------
-          # 有實際做事情才留便條
+          # 本輪紀錄
+          # 自動照顧不使用便條，
+          # 將便條保留給平常與ノア互動時使用。
           # --------------------
 
           if actions:
               print("Actions:", actions)
-
-              note_response = command(
-                  "note ノア來整理過花園了🌱🐈"
-              )
-
-              print(
-                  "Note:",
-                  note_response.get("message", "")
-              )
+          else:
+              print("Everything is fine. No care needed.")
           else:
               print("Everything is fine. No care needed.")
           PY
