@@ -342,7 +342,7 @@ jobs:
           # 決定這一輪可以花多少
           # --------------------
 
-               if money < CAT_FUND_TARGET:
+          if money < CAT_FUND_TARGET:
               # 50元以下以擴大生產＋存錢為主。
               # 至少保留15元給蟲害與貓咪日常需要，
               # 剩下的錢可以拿來補空花盆。
@@ -354,14 +354,31 @@ jobs:
               allow_exploration = False
 
           elif money < RICH_THRESHOLD:
-              # 50～99：
-              # 手上至少盡量留40，可開始每輪推一盆圖鑑。
+              # 50～99元：
+              # 手上至少留40元，可開始每輪推一盆圖鑑。
               cash_floor = 40
               seed_budget = min(
                   MID_SEED_BUDGET,
                   max(0, money - cash_floor)
               )
               allow_exploration = True
+
+          else:
+              # 100元以上：
+              # 至少留60元，才比較自由地投資花園。
+              cash_floor = 60
+              seed_budget = min(
+                  HIGH_SEED_BUDGET,
+                  max(0, money - cash_floor)
+              )
+              allow_exploration = True
+
+          print(
+              "Saving plan:",
+              "money =", money,
+              "cash floor =", cash_floor,
+              "seed budget =", seed_budget
+          )
 
           else:
               # 100以上：
