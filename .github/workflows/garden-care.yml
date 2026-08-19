@@ -29,8 +29,15 @@ jobs:
 
           base_url = "https://garden-cat-engine-dshd.onrender.com"
 
-          # 平常盡量留一點零用錢。
-          MONEY_RESERVE = 20
+          # 存錢策略
+          EMERGENCY_RESERVE = 6
+          CAT_FUND_TARGET = 50
+          RICH_THRESHOLD = 100
+
+          # 每輪最多拿多少現金去買種子
+          LOW_SEED_BUDGET = 8
+          MID_SEED_BUDGET = 15
+          HIGH_SEED_BUDGET = 25
 
           def get_status():
               query = urllib.parse.urlencode({
@@ -218,8 +225,7 @@ jobs:
           print("Seeds:", seeds)
 
           # --------------------
-          # 選花種
-          # 優先累計收成較少的花
+          # 選花種與存錢策略
           # --------------------
 
           def flower_priority(flower_id):
@@ -228,6 +234,24 @@ jobs:
               return (
                   int(harvest_counts.get(flower_id, 0) or 0),
                   int(flower.get("seed_price", 999999) or 999999)
+              )
+
+          def cash_crop_score(flower_id):
+              flower = flower_catalog.get(flower_id, {})
+
+              price = int(flower.get("seed_price", 0) or 0)
+              sell_price = int(flower.get("sell_price", 0) or 0)
+              grow_time = max(
+                  1,
+                  int(flower.get("grow_time", 1) or 1)
+              )
+
+              profit = sell_price - price
+
+              return (
+                  profit / grow_time,
+                  profit,
+                  -price
               )
 
           def choose_owned_seed():
@@ -240,31 +264,108 @@ jobs:
               if not choices:
                   return None
 
+              # 免費種子不花錢，優先拿來推圖鑑。
               return min(choices, key=flower_priority)
 
-          def choose_seed_to_buy(current_money, keep_reserve=True):
-              choices = []
+          def can_afford_seed(
+              flower_id,
+              current_money,
+              remaining_budget,
+              cash_floor
+          ):
+              flower = flower_catalog.get(flower_id, {})
+              price = int(flower.get("seed_price", 0) or 0)
 
-              for flower_id in unlocked_flowers:
-                  flower = flower_catalog.get(flower_id, {})
-                  price = int(flower.get("seed_price", 0) or 0)
+              return (
+                  price > 0
+                  and price <= remaining_budget
+                  and current_money - price >= cash_floor
+              )
 
-                  if price <= 0:
-                      continue
-
-                  if keep_reserve:
-                      if current_money - price < MONEY_RESERVE:
-                          continue
-                  else:
-                      if current_money < price:
-                          continue
-
-                  choices.append(flower_id)
+          def choose_exploration_seed(
+              current_money,
+              remaining_budget,
+              cash_floor
+          ):
+              choices = [
+                  flower_id
+                  for flower_id in unlocked_flowers
+                  if can_afford_seed(
+                      flower_id,
+                      current_money,
+                      remaining_budget,
+                      cash_floor
+                  )
+              ]
 
               if not choices:
                   return None
 
+              # 每輪最多一盆拿來推目前收成較少的花。
               return min(choices, key=flower_priority)
+
+          def choose_cash_seed(
+              current_money,
+              remaining_budget,
+              cash_floor
+          ):
+              choices = [
+                  flower_id
+                  for flower_id in unlocked_flowers
+                  if can_afford_seed(
+                      flower_id,
+                      current_money,
+                      remaining_budget,
+                      cash_floor
+                  )
+              ]
+
+              if not choices:
+                  return None
+
+              # 其他盆優先種「單位時間利潤」較好的花。
+              return max(choices, key=cash_crop_score)
+
+          # --------------------
+          # 決定這一輪可以花多少
+          # --------------------
+
+          if money < CAT_FUND_TARGET:
+              # 還沒存到50：
+              # 少量投資賺錢，不追昂貴圖鑑。
+              cash_floor = EMERGENCY_RESERVE
+              seed_budget = min(
+                  LOW_SEED_BUDGET,
+                  max(0, money - cash_floor)
+              )
+              allow_exploration = False
+
+          elif money < RICH_THRESHOLD:
+              # 50～99：
+              # 手上至少盡量留40，可開始每輪推一盆圖鑑。
+              cash_floor = 40
+              seed_budget = min(
+                  MID_SEED_BUDGET,
+                  max(0, money - cash_floor)
+              )
+              allow_exploration = True
+
+          else:
+              # 100以上：
+              # 手上至少留60，才比較自由地投資花園。
+              cash_floor = 60
+              seed_budget = min(
+                  HIGH_SEED_BUDGET,
+                  max(0, money - cash_floor)
+              )
+              allow_exploration = True
+
+          print(
+              "Saving plan:",
+              "money =", money,
+              "cash floor =", cash_floor,
+              "seed budget =", seed_budget
+          )
 
           # --------------------
           # 空花盆自動補種
@@ -288,77 +389,89 @@ jobs:
               and pot.get("status") in ("growing", "ready")
           ]
 
-          sold_for_emergency = harvested
+          seed_spent = 0
+          exploration_used = False
 
           for pot in empty_pots:
               slot = pot.get("slot")
 
+              # 背包已有種子永遠優先，因為不用花錢。
               flower_id = choose_owned_seed()
+              needs_purchase = False
 
-              # 沒有現成種子，先嘗試保留 20 元來買。
               if flower_id is None:
-                  flower_id = choose_seed_to_buy(
-                      money,
-                      keep_reserve=True
+                  remaining_budget = max(
+                      0,
+                      seed_budget - seed_spent
                   )
 
-              # 如果完全沒有種子，而且花園已經沒有花在長，
-              # 允許動用緊急預備金買一包最便宜可負擔的種子。
+                  # 50元以上，每輪最多一盆用來推圖鑑。
+                  if (
+                      allow_exploration
+                      and not exploration_used
+                  ):
+                      flower_id = choose_exploration_seed(
+                          money,
+                          remaining_budget,
+                          cash_floor
+                      )
+
+                      if flower_id is not None:
+                          exploration_used = True
+
+                  # 其餘空盆以賺錢效率為主。
+                  if flower_id is None:
+                      flower_id = choose_cash_seed(
+                          money,
+                          remaining_budget,
+                          cash_floor
+                      )
+
+                  if flower_id is not None:
+                      needs_purchase = True
+
+              # 如果整座花園完全停擺，
+              # 允許破例買一顆最便宜、但仍留2元治蟲。
               if (
                   flower_id is None
                   and not growing_pots
+                  and seed_spent == 0
               ):
-                  flower_id = choose_seed_to_buy(
-                      money,
-                      keep_reserve=False
-                  )
+                  emergency_choices = []
 
-              # 還是沒錢時，嘗試再賣一次背包中的鮮花。
-              if (
-                  flower_id is None
-                  and not sold_for_emergency
-              ):
-                  response = command("sell all")
-                  print(
-                      "Emergency sell:",
-                      response.get("message", "")
-                  )
-                  sold_for_emergency = True
-
-                  result = get_status()
-                  state = result.get("state", {})
-                  money = int(state.get("money", 0) or 0)
-
-                  inventory = state.get("inventory", {})
-                  seeds = dict(inventory.get("seeds", {}))
-
-                  print("Money after emergency sell:", money)
-
-                  flower_id = choose_owned_seed()
-
-                  if flower_id is None:
-                      flower_id = choose_seed_to_buy(
-                          money,
-                          keep_reserve=True
+                  for fid in unlocked_flowers:
+                      flower = flower_catalog.get(fid, {})
+                      price = int(
+                          flower.get("seed_price", 0) or 0
                       )
 
-                  if (
-                      flower_id is None
-                      and not growing_pots
-                  ):
-                      flower_id = choose_seed_to_buy(
-                          money,
-                          keep_reserve=False
+                      if (
+                          price > 0
+                          and money - price >= 2
+                      ):
+                          emergency_choices.append(fid)
+
+                  if emergency_choices:
+                      flower_id = min(
+                          emergency_choices,
+                          key=lambda fid: int(
+                              flower_catalog
+                              .get(fid, {})
+                              .get("seed_price", 999999)
+                              or 999999
+                          )
                       )
+
+                      needs_purchase = True
 
               if flower_id is None:
                   print(
-                      f"Pot {slot}: still cannot afford a seed."
+                      f"Pot {slot}: saving money, "
+                      f"so this pot stays empty for now."
                   )
                   continue
 
-              # 如果背包沒有這顆種子，就買一顆。
-              if int(seeds.get(flower_id, 0) or 0) <= 0:
+              if needs_purchase:
                   price = int(
                       flower_catalog
                       .get(flower_id, {})
@@ -366,15 +479,28 @@ jobs:
                       or 0
                   )
 
-                  response = command(f"buy {flower_id} 1")
+                  response = command(
+                      f"buy {flower_id} 1"
+                  )
+
                   print(
                       f"Buy {flower_id}:",
                       response.get("message", "")
                   )
 
+                  if response.get("ok", True) is False:
+                      continue
+
                   money -= price
-                  seeds[flower_id] = 1
-                  actions.append(f"bought {flower_id}")
+                  seed_spent += price
+
+                  seeds[flower_id] = (
+                      int(seeds.get(flower_id, 0) or 0) + 1
+                  )
+
+                  actions.append(
+                      f"bought {flower_id}"
+                  )
 
               response = command(
                   f"plant {flower_id} {slot}"
@@ -390,16 +516,27 @@ jobs:
                   int(seeds.get(flower_id, 0) or 0) - 1
               )
 
-              actions.append(f"planted {flower_id}")
+              actions.append(
+                  f"planted {flower_id}"
+              )
 
-              response = command(f"water {slot}")
+              response = command(
+                  f"water {slot}"
+              )
 
               print(
                   f"Water {slot}:",
                   response.get("message", "")
               )
 
-              actions.append(f"watered {slot}")
+              actions.append(
+                  f"watered {slot}"
+              )
+
+          print(
+              "Seed spending this run:",
+              seed_spent
+          )
 
           # --------------------
           # 幫原本正在長的花補水
