@@ -29,6 +29,7 @@ jobs:
 
           base_url = "https://garden-cat-engine-dshd.onrender.com"
 
+          # 平常盡量留一點零用錢。
           MONEY_RESERVE = 20
 
           def get_status():
@@ -89,7 +90,7 @@ jobs:
           print("Found pots:", len(pots))
 
           # --------------------
-          # 清掉枯萎花
+          # 清除枯萎花
           # --------------------
 
           for pot in pots:
@@ -99,11 +100,14 @@ jobs:
               if pot.get("status") == "withered":
                   slot = pot.get("slot")
                   response = command(f"clear {slot}")
-                  print(f"Clear {slot}:", response.get("message", ""))
+                  print(
+                      f"Clear {slot}:",
+                      response.get("message", "")
+                  )
                   actions.append(f"cleared {slot}")
 
           # --------------------
-          # 收成成熟花朵
+          # 採收成熟花朵
           # --------------------
 
           result = get_status()
@@ -111,17 +115,39 @@ jobs:
           pots = state.get("pots", [])
 
           ready_pots = [
-              pot for pot in pots
+              pot
+              for pot in pots
               if isinstance(pot, dict)
               and pot.get("status") == "ready"
           ]
 
+          harvested = False
+
           if ready_pots:
               response = command("harvest all")
-              print("Harvest:", response.get("message", ""))
+              print(
+                  "Harvest:",
+                  response.get("message", "")
+              )
               actions.append("harvested")
+              harvested = True
 
-          # 收成後重新取得最新狀態
+          # --------------------
+          # 採收後把鮮花賣掉
+          # --------------------
+
+          if harvested:
+              response = command("sell all")
+              print(
+                  "Sell harvested flowers:",
+                  response.get("message", "")
+              )
+              actions.append("sold flowers")
+
+          # --------------------
+          # 重新讀取最新金錢與背包
+          # --------------------
+
           result = get_status()
           state = result.get("state", {})
 
@@ -135,13 +161,17 @@ jobs:
           catalog = get_catalog()
           flower_catalog = catalog.get("flowers", {})
 
+          print("Money after harvest/sell:", money)
+          print("Seeds:", seeds)
+
           # --------------------
-          # 選擇下一種花
-          # 優先種收成次數比較少的花
+          # 選花種
+          # 優先累計收成較少的花
           # --------------------
 
           def flower_priority(flower_id):
               flower = flower_catalog.get(flower_id, {})
+
               return (
                   int(harvest_counts.get(flower_id, 0) or 0),
                   int(flower.get("seed_price", 999999) or 999999)
@@ -159,7 +189,7 @@ jobs:
 
               return min(choices, key=flower_priority)
 
-          def choose_seed_to_buy(current_money):
+          def choose_seed_to_buy(current_money, keep_reserve=True):
               choices = []
 
               for flower_id in unlocked_flowers:
@@ -169,9 +199,12 @@ jobs:
                   if price <= 0:
                       continue
 
-                  # 永遠至少留下 20 塊
-                  if current_money - price < MONEY_RESERVE:
-                      continue
+                  if keep_reserve:
+                      if current_money - price < MONEY_RESERVE:
+                          continue
+                  else:
+                      if current_money < price:
+                          continue
 
                   choices.append(flower_id)
 
@@ -188,50 +221,112 @@ jobs:
           state = result.get("state", {})
           pots = state.get("pots", [])
 
-          for pot in pots:
-              if not isinstance(pot, dict):
-                  continue
+          empty_pots = [
+              pot
+              for pot in pots
+              if isinstance(pot, dict)
+              and pot.get("status") == "empty"
+          ]
 
-              if pot.get("status") != "empty":
-                  continue
+          growing_pots = [
+              pot
+              for pot in pots
+              if isinstance(pot, dict)
+              and pot.get("status") in ("growing", "ready")
+          ]
 
+          sold_for_emergency = harvested
+
+          for pot in empty_pots:
               slot = pot.get("slot")
 
               flower_id = choose_owned_seed()
 
-              # 沒有種子的話，才考慮買
+              # 沒有現成種子，先嘗試保留 20 元來買。
               if flower_id is None:
-                  flower_id = choose_seed_to_buy(money)
+                  flower_id = choose_seed_to_buy(
+                      money,
+                      keep_reserve=True
+                  )
 
-                  if flower_id is not None:
-                      price = int(
-                          flower_catalog
-                          .get(flower_id, {})
-                          .get("seed_price", 0)
-                          or 0
+              # 如果完全沒有種子，而且花園已經沒有花在長，
+              # 允許動用緊急預備金買一包最便宜可負擔的種子。
+              if (
+                  flower_id is None
+                  and not growing_pots
+              ):
+                  flower_id = choose_seed_to_buy(
+                      money,
+                      keep_reserve=False
+                  )
+
+              # 還是沒錢時，嘗試再賣一次背包中的鮮花。
+              if (
+                  flower_id is None
+                  and not sold_for_emergency
+              ):
+                  response = command("sell all")
+                  print(
+                      "Emergency sell:",
+                      response.get("message", "")
+                  )
+                  sold_for_emergency = True
+
+                  result = get_status()
+                  state = result.get("state", {})
+                  money = int(state.get("money", 0) or 0)
+
+                  inventory = state.get("inventory", {})
+                  seeds = dict(inventory.get("seeds", {}))
+
+                  print("Money after emergency sell:", money)
+
+                  flower_id = choose_owned_seed()
+
+                  if flower_id is None:
+                      flower_id = choose_seed_to_buy(
+                          money,
+                          keep_reserve=True
                       )
 
-                      response = command(f"buy {flower_id} 1")
-                      print(
-                          f"Buy {flower_id}:",
-                          response.get("message", "")
+                  if (
+                      flower_id is None
+                      and not growing_pots
+                  ):
+                      flower_id = choose_seed_to_buy(
+                          money,
+                          keep_reserve=False
                       )
-
-                      money -= price
-                      seeds[flower_id] = (
-                          int(seeds.get(flower_id, 0) or 0) + 1
-                      )
-
-                      actions.append(f"bought {flower_id}")
 
               if flower_id is None:
                   print(
-                      f"Pot {slot}: no seed available "
-                      f"without using reserve money."
+                      f"Pot {slot}: still cannot afford a seed."
                   )
                   continue
 
-              response = command(f"plant {flower_id} {slot}")
+              # 如果背包沒有這顆種子，就買一顆。
+              if int(seeds.get(flower_id, 0) or 0) <= 0:
+                  price = int(
+                      flower_catalog
+                      .get(flower_id, {})
+                      .get("seed_price", 0)
+                      or 0
+                  )
+
+                  response = command(f"buy {flower_id} 1")
+                  print(
+                      f"Buy {flower_id}:",
+                      response.get("message", "")
+                  )
+
+                  money -= price
+                  seeds[flower_id] = 1
+                  actions.append(f"bought {flower_id}")
+
+              response = command(
+                  f"plant {flower_id} {slot}"
+              )
+
               print(
                   f"Plant {flower_id} in {slot}:",
                   response.get("message", "")
@@ -245,6 +340,7 @@ jobs:
               actions.append(f"planted {flower_id}")
 
               response = command(f"water {slot}")
+
               print(
                   f"Water {slot}:",
                   response.get("message", "")
@@ -253,7 +349,7 @@ jobs:
               actions.append(f"watered {slot}")
 
           # --------------------
-          # 幫原本正在長、但還沒澆水的花補水
+          # 幫原本正在長的花補水
           # --------------------
 
           result = get_status()
@@ -271,6 +367,7 @@ jobs:
                   slot = pot.get("slot")
 
                   response = command(f"water {slot}")
+
                   print(
                       f"Water existing pot {slot}:",
                       response.get("message", "")
@@ -345,7 +442,7 @@ jobs:
                   actions.append("petted cat")
 
           # --------------------
-          # 有做事情才留便條
+          # 有實際做事情才留便條
           # --------------------
 
           if actions:
