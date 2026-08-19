@@ -380,23 +380,6 @@ jobs:
               "seed budget =", seed_budget
           )
 
-          else:
-              # 100以上：
-              # 手上至少留60，才比較自由地投資花園。
-              cash_floor = 60
-              seed_budget = min(
-                  HIGH_SEED_BUDGET,
-                  max(0, money - cash_floor)
-              )
-              allow_exploration = True
-
-          print(
-              "Saving plan:",
-              "money =", money,
-              "cash floor =", cash_floor,
-              "seed budget =", seed_budget
-          )
-
           # --------------------
           # 空花盆自動補種
           # --------------------
@@ -669,8 +652,6 @@ jobs:
 
           if actions:
               print("Actions:", actions)
-          else:
-              print("Everything is fine. No care needed.")
           else:
               print("Everything is fine. No care needed.")
           PY
