@@ -29,6 +29,8 @@ jobs:
 
           base_url = "https://garden-cat-engine-dshd.onrender.com"
 
+          MONEY_RESERVE = 20
+
           def get_status():
               query = urllib.parse.urlencode({
                   "session_id": session_id
@@ -40,6 +42,15 @@ jobs:
                   headers={
                       "X-Garden-Token": garden_token
                   }
+              )
+
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  return json.load(response)
+
+          def get_catalog():
+              request = urllib.request.Request(
+                  f"{base_url}/api/catalog",
+                  method="GET"
               )
 
               with urllib.request.urlopen(request, timeout=120) as response:
@@ -64,105 +75,290 @@ jobs:
               with urllib.request.urlopen(request, timeout=120) as response:
                   return json.load(response)
 
+          actions = []
+
+          # --------------------
+          # 讀取花園
+          # --------------------
+
           result = get_status()
           state = result.get("state", {})
-
-          # --------------------
-          # 照顧花朵
-          # --------------------
-
           pots = state.get("pots", [])
-          watered = []
 
+          print("Money:", state.get("money", 0))
           print("Found pots:", len(pots))
+
+          # --------------------
+          # 清掉枯萎花
+          # --------------------
 
           for pot in pots:
               if not isinstance(pot, dict):
                   continue
 
+              if pot.get("status") == "withered":
+                  slot = pot.get("slot")
+                  response = command(f"clear {slot}")
+                  print(f"Clear {slot}:", response.get("message", ""))
+                  actions.append(f"cleared {slot}")
+
+          # --------------------
+          # 收成成熟花朵
+          # --------------------
+
+          result = get_status()
+          state = result.get("state", {})
+          pots = state.get("pots", [])
+
+          ready_pots = [
+              pot for pot in pots
+              if isinstance(pot, dict)
+              and pot.get("status") == "ready"
+          ]
+
+          if ready_pots:
+              response = command("harvest all")
+              print("Harvest:", response.get("message", ""))
+              actions.append("harvested")
+
+          # 收成後重新取得最新狀態
+          result = get_status()
+          state = result.get("state", {})
+
+          money = int(state.get("money", 0) or 0)
+          unlocked_flowers = state.get("unlocked_flowers", [])
+          harvest_counts = state.get("flower_harvest_counts", {})
+
+          inventory = state.get("inventory", {})
+          seeds = dict(inventory.get("seeds", {}))
+
+          catalog = get_catalog()
+          flower_catalog = catalog.get("flowers", {})
+
+          # --------------------
+          # 選擇下一種花
+          # 優先種收成次數比較少的花
+          # --------------------
+
+          def flower_priority(flower_id):
+              flower = flower_catalog.get(flower_id, {})
+              return (
+                  int(harvest_counts.get(flower_id, 0) or 0),
+                  int(flower.get("seed_price", 999999) or 999999)
+              )
+
+          def choose_owned_seed():
+              choices = [
+                  flower_id
+                  for flower_id in unlocked_flowers
+                  if int(seeds.get(flower_id, 0) or 0) > 0
+              ]
+
+              if not choices:
+                  return None
+
+              return min(choices, key=flower_priority)
+
+          def choose_seed_to_buy(current_money):
+              choices = []
+
+              for flower_id in unlocked_flowers:
+                  flower = flower_catalog.get(flower_id, {})
+                  price = int(flower.get("seed_price", 0) or 0)
+
+                  if price <= 0:
+                      continue
+
+                  # 永遠至少留下 20 塊
+                  if current_money - price < MONEY_RESERVE:
+                      continue
+
+                  choices.append(flower_id)
+
+              if not choices:
+                  return None
+
+              return min(choices, key=flower_priority)
+
+          # --------------------
+          # 空花盆自動補種
+          # --------------------
+
+          result = get_status()
+          state = result.get("state", {})
+          pots = state.get("pots", [])
+
+          for pot in pots:
+              if not isinstance(pot, dict):
+                  continue
+
+              if pot.get("status") != "empty":
+                  continue
+
               slot = pot.get("slot")
 
+              flower_id = choose_owned_seed()
+
+              # 沒有種子的話，才考慮買
+              if flower_id is None:
+                  flower_id = choose_seed_to_buy(money)
+
+                  if flower_id is not None:
+                      price = int(
+                          flower_catalog
+                          .get(flower_id, {})
+                          .get("seed_price", 0)
+                          or 0
+                      )
+
+                      response = command(f"buy {flower_id} 1")
+                      print(
+                          f"Buy {flower_id}:",
+                          response.get("message", "")
+                      )
+
+                      money -= price
+                      seeds[flower_id] = (
+                          int(seeds.get(flower_id, 0) or 0) + 1
+                      )
+
+                      actions.append(f"bought {flower_id}")
+
+              if flower_id is None:
+                  print(
+                      f"Pot {slot}: no seed available "
+                      f"without using reserve money."
+                  )
+                  continue
+
+              response = command(f"plant {flower_id} {slot}")
               print(
-                  "Pot",
-                  slot,
-                  "- status:",
-                  pot.get("status"),
-                  "- watered:",
-                  pot.get("watered")
+                  f"Plant {flower_id} in {slot}:",
+                  response.get("message", "")
               )
+
+              seeds[flower_id] = max(
+                  0,
+                  int(seeds.get(flower_id, 0) or 0) - 1
+              )
+
+              actions.append(f"planted {flower_id}")
+
+              response = command(f"water {slot}")
+              print(
+                  f"Water {slot}:",
+                  response.get("message", "")
+              )
+
+              actions.append(f"watered {slot}")
+
+          # --------------------
+          # 幫原本正在長、但還沒澆水的花補水
+          # --------------------
+
+          result = get_status()
+          state = result.get("state", {})
+          pots = state.get("pots", [])
+
+          for pot in pots:
+              if not isinstance(pot, dict):
+                  continue
 
               if (
                   pot.get("status") == "growing"
                   and pot.get("watered") is False
               ):
+                  slot = pot.get("slot")
+
                   response = command(f"water {slot}")
-                  print(f"Water {slot}:", response.get("message", ""))
-                  watered.append(slot)
+                  print(
+                      f"Water existing pot {slot}:",
+                      response.get("message", "")
+                  )
+
+                  actions.append(f"watered {slot}")
 
           # --------------------
           # 照顧貓咪
           # --------------------
 
+          result = get_status()
+          state = result.get("state", {})
+
           cat = state.get("cat")
           inventory = state.get("inventory", {})
           items = inventory.get("items", {})
-
-          cat_actions = []
 
           if isinstance(cat, dict):
               hunger = float(cat.get("hunger", 100))
               thirst = float(cat.get("thirst", 100))
               mood = float(cat.get("mood", 100))
+
               pet_cooldown = int(
-                  cat.get("pet_cooldown_remaining_seconds", 0) or 0
+                  cat.get(
+                      "pet_cooldown_remaining_seconds",
+                      0
+                  ) or 0
               )
 
-              basic_food = int(items.get("basic_food", 0) or 0)
+              basic_food = int(
+                  items.get("basic_food", 0) or 0
+              )
 
               print(
-                  "Cat status:",
+                  "Cat:",
                   "hunger =", hunger,
                   "thirst =", thirst,
                   "mood =", mood,
-                  "basic food =", basic_food,
+                  "food =", basic_food,
                   "pet cooldown =", pet_cooldown
               )
 
-              # 飽食低於或等於 40 才餵。
-              # 沒有普通貓糧就不自動花錢購買。
               if hunger <= 40:
                   if basic_food > 0:
                       response = command("feed basic")
-                      print("Feed cat:", response.get("message", ""))
-                      cat_actions.append("fed")
+                      print(
+                          "Feed:",
+                          response.get("message", "")
+                      )
+                      actions.append("fed cat")
                   else:
-                      print("Cat is hungry, but no basic food is available.")
+                      print(
+                          "Cat needs food, "
+                          "but no basic food is available."
+                      )
 
-              # 口渴值低於或等於 40 時補水。
               if thirst <= 40:
                   response = command("give_water")
-                  print("Give water:", response.get("message", ""))
-                  cat_actions.append("water")
+                  print(
+                      "Cat water:",
+                      response.get("message", "")
+                  )
+                  actions.append("gave cat water")
 
-              # 心情低於或等於 40，而且摸摸冷卻結束才摸。
               if mood <= 40 and pet_cooldown <= 0:
                   response = command("pet")
-                  print("Pet cat:", response.get("message", ""))
-                  cat_actions.append("pet")
-
-          else:
-              print("No adopted cat yet.")
+                  print(
+                      "Pet:",
+                      response.get("message", "")
+                  )
+                  actions.append("petted cat")
 
           # --------------------
-          # 留一張便條
+          # 有做事情才留便條
           # --------------------
 
-          if watered or cat_actions:
-              print("Watered pots:", watered)
-              print("Cat actions:", cat_actions)
+          if actions:
+              print("Actions:", actions)
 
-              note_response = command("note ノア來照顧過花園了🌱🐈")
-              print("Note:", note_response.get("message", ""))
+              note_response = command(
+                  "note ノア來整理過花園了🌱🐈"
+              )
+
+              print(
+                  "Note:",
+                  note_response.get("message", "")
+              )
           else:
               print("Everything is fine. No care needed.")
           PY
