@@ -90,9 +90,62 @@ jobs:
           print("Found pots:", len(pots))
 
           # --------------------
-          # 清除枯萎花
+          # 處理蟲害
           # --------------------
 
+          money_now = int(state.get("money", 0) or 0)
+
+          pest_pots = [
+              pot
+              for pot in pots
+              if isinstance(pot, dict)
+              and pot.get("has_pest") is True
+              and pot.get("status") != "withered"
+          ]
+
+          # 有蟲但連治療費都不夠時，
+          # 先賣背包中的花換取緊急治療費。
+          if pest_pots and money_now < 2:
+              response = command("sell all")
+              print(
+                  "Emergency sell for pest treatment:",
+                  response.get("message", "")
+              )
+
+              result = get_status()
+              state = result.get("state", {})
+              pots = state.get("pots", [])
+              money_now = int(state.get("money", 0) or 0)
+
+          for pot in pest_pots:
+              slot = pot.get("slot")
+
+              if money_now >= 2:
+                  response = command(f"treat {slot}")
+
+                  print(
+                      f"Treat pest in pot {slot}:",
+                      response.get("message", "")
+                  )
+
+                  if response.get("ok", True) is not False:
+                      money_now -= 2
+                      actions.append(f"treated pest {slot}")
+              else:
+                  print(
+                      f"Pot {slot} has pests, "
+                      f"but there is not enough money to treat it."
+                  )
+
+          # 治療後重新取得花園狀態
+          result = get_status()
+          state = result.get("state", {})
+          pots = state.get("pots", [])
+
+          # --------------------
+          # 清除枯萎花
+          # --------------------
+          
           for pot in pots:
               if not isinstance(pot, dict):
                   continue
