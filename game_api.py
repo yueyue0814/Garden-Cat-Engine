@@ -1204,6 +1204,37 @@ def catalog():
 
 # ─── 人类网页入口：使用每座花园自己的钥匙，不暴露全局 API Key ───────────────
 
+@app.route("/api/reset_web_key", methods=["POST"])
+@require_api_key
+def reset_web_key():
+    data = request.get_json(silent=True) or {}
+    session_id = str(data.get("session_id", "")).strip()
+
+    if not SESSION_ID_RE.fullmatch(session_id):
+        return jsonify({
+            "ok": False,
+            "message": "❌ session_id 格式不正確"
+        }), 400
+
+    state = db_load_state(session_id)
+
+    if state is None:
+        return jsonify({
+            "ok": False,
+            "message": "❌ 找不到這座花園"
+        }), 404
+
+    new_token = _issue_web_token(state)
+    db_save_state(session_id, state)
+
+    return jsonify({
+        "ok": True,
+        "session_id": session_id,
+        "garden_token": new_token,
+        "message": "✅ 已重新產生花園鑰匙，原本的花園進度沒有改動。"
+    })
+
+
 @app.route("/web/register", methods=["POST"])
 def web_register():
     data = request.get_json(silent=True) or {}
